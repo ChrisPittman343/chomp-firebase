@@ -1,23 +1,12 @@
-/* eslint-disable no-shadow */
-import { google } from "googleapis";
-
-const SCOPES = [
-  "https://www.googleapis.com/auth/classroom.courses.readonly",
-  "https://www.googleapis.com/auth/classroom.rosters.readonly",
-  "https://www.googleapis.com/auth/classroom.profile.emails",
-  "https://www.googleapis.com/auth/classroom.profile.photos",
-];
-const CLIENT_ID =
-  "152270180248-gfve9pbk9sr4r22hv3ostausv95eurnp.apps.googleusercontent.com";
-const CLIENT_SECRET = "uoD33lCt2B8j9oZ-SHmZztWS";
-const REDIRECT_URI = "https://chomp-chat.firebaseapp.com/__/auth/handler";
+import { classroom_v1, google } from "googleapis";
+import { CLIENT_ID, CLIENT_SECRET, REDIRECT_URI, SCOPES } from "./credentials";
 
 /**
  * Sets default authorization for Google API calls
  * @param accessToken user access token
  * @returns authorized oAuth2Client
  */
-function getAuthClient(accessToken: string) {
+export function getAuthClient(accessToken: string) {
   const oAuth2Client = new google.auth.OAuth2(
     CLIENT_ID,
     CLIENT_SECRET,
@@ -31,36 +20,63 @@ function getAuthClient(accessToken: string) {
   return oAuth2Client;
 }
 
-export async function listCourses(accessToken: string) {
-  getAuthClient(accessToken);
-  const classroom = google.classroom("v1");
-
-  const classes = await classroom.courses.list({
-    courseStates: ["ACTIVE"],
-    pageSize: 10,
-  });
-
-  return classes;
+export function getClassroomClient(auth: any) {
+  return google.classroom({ version: "v1", auth });
 }
 
-export async function listStudents(accessToken: string) {
-  getAuthClient(accessToken);
-  const classroom = google.classroom("v1");
-  let students;
-  try {
-    const classes = await classroom.courses.list({
-      access_token: accessToken,
-      pageSize: 3,
-    });
-    const firstId = classes.data.courses![0].id!;
-    students = await classroom.courses.students.list({
-      courseId: firstId,
-      pageSize: 20,
-    });
-    return students;
-  } catch (err) {
-    students = `ERROR: ${err}`;
-  }
+export async function getCourses(
+  classroom: classroom_v1.Classroom,
+  numCourses = 5
+) {
+  const courses = await classroom.courses.list({
+    courseStates: ["ACTIVE"],
+    teacherId: "me",
+    pageSize: numCourses,
+  });
+  return courses.data.courses;
+}
 
-  return students;
+export async function getStudents(
+  classroom: classroom_v1.Classroom,
+  courses: classroom_v1.Schema$Course[],
+  numStudents = 40
+) {
+  const promises = [];
+  for (const course of courses) {
+    promises.push(
+      classroom.courses.students.list({
+        courseId: course.id!,
+        pageSize: numStudents,
+      })
+    );
+  }
+  return Promise.all(promises)
+    .then((data) => {
+      return data.map((dat) => dat.data.students);
+    })
+    .catch((err) => {
+      return [];
+    });
+}
+
+export function parseCourseData(
+  coursesData: classroom_v1.Schema$Course[],
+  studentsData: classroom_v1.Schema$Student[][]
+) {
+  const classData = [];
+  for (let i = 0; i < coursesData.length; i++) {
+    const course = {
+      name: coursesData[i].name!,
+      section: coursesData[i].section,
+      description: coursesData[i].description,
+    };
+    const roster = studentsData[i]?.map((student) => {
+      return student.profile?.emailAddress;
+    });
+    classData.push({
+      course,
+      roster,
+    });
+  }
+  return classData;
 }
