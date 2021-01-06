@@ -88,7 +88,8 @@ export const createClass = functions.https.onCall(async (data, ctx) => {
   participants_lc?.unshift(ctx.auth.token.email.toLowerCase()); //Adds the teacher's email to the participants
   const participants_added: string[] = [];
   const classRef = db.collection("classes").doc();
-  const channelsRef = classRef.collection("channels");
+  //@ts-ignore
+  const channelsRef = classRef.collection("threads");
   const rosterRef = db.collection("rosters").doc();
 
   //Updates existing user profiles
@@ -130,7 +131,7 @@ export const createClass = functions.https.onCall(async (data, ctx) => {
     name,
     section,
     description,
-    channels: ["General"],
+    tags: [],
     participants: participants_lc,
     roster: rosterRef.id,
   });
