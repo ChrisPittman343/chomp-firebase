@@ -2,16 +2,15 @@ import * as functions from "firebase-functions";
 import cors = require("cors");
 import express = require("express");
 import * as admin from "firebase-admin";
+import { ERROR_401, ERROR_CLASS_REQUEST } from "./errors";
+import { NewClassData } from "./types";
 import {
   getAuthClient,
   getClassroomClient,
   getCourses,
   getStudents,
-  parseCourseData,
 } from "./oAuthFunctions";
-import { ERROR_401, ERROR_CLASS_REQUEST } from "./errors";
 import { verifyBasicAuth } from "./verifyRequest";
-import { NewClassData } from "./types";
 
 admin.initializeApp();
 
