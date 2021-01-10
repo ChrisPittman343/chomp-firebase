@@ -8,6 +8,13 @@ export const ERROR_401 = {
 export const ERROR_CLASS_REQUEST = {
   code: 400,
   message:
-    "Class could not be made due to a bad request. This could be caused by two things:\nA class name is required, but was omitted.\nMaximum participants is 40. Select fewer students to create this class.",
+    "Class could not be made due to a bad request. A class request requires two things: A class name, and 0 <= NumParticipants < 40.",
+  status: "BAD REQUEST",
+};
+
+export const ERROR_THREAD_REQUEST = {
+  code: 400,
+  message:
+    "Thread could not be made due to a bad request. A thread request requires a few things: A title < 300 characters, (Optional) A message < 1500 characters, Valid classId, and Valid tags",
   status: "BAD REQUEST",
 };

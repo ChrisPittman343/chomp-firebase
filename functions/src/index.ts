@@ -2,8 +2,8 @@ import * as functions from "firebase-functions";
 import cors = require("cors");
 import express = require("express");
 import * as admin from "firebase-admin";
-import { ERROR_401, ERROR_CLASS_REQUEST } from "./errors";
-import { NewClassData } from "./types";
+import { ERROR_401, ERROR_CLASS_REQUEST, ERROR_THREAD_REQUEST } from "./errors";
+import { ClassData, NewClassData, NewThreadData, ThreadData } from "./types";
 import {
   getAuthClient,
   getClassroomClient,
@@ -49,35 +49,51 @@ export const onNewUser = functions.auth.user().onCreate((user, ctx) => {
     email: user.email!.toLowerCase(),
     photoURL: user.photoURL,
   };
-  db.collection("users")
-    .where("email", "==", user.email)
-    .get()
-    .then((snapshot) => {
-      if (snapshot.docs.length === 1 && snapshot.docs[0].exists) {
-        //If the query finds one pre-existing user doc with that email (Added to a class before they logged in)
-        // Because they already have classes assigned, rosters and classes will have to be hydrated with data
-        const userDoc = snapshot.docs[0];
-        userDoc.ref
-          .set(userInfo)
-          .then(() => {
-            console.log(9);
-          })
-          .catch((err) => err);
-      } else {
-        //Otherwise, create a new document with their info. Since they haven't been added to other classes, this is all that needs to be done here.
-        db.collection("users")
-          .doc()
-          .create(userInfo)
-          .then()
-          .catch((err) => err);
-      }
-    })
-    .catch((err) => console.log(err));
+  try {
+    db.collection("users")
+      .where("email", "==", user.email)
+      .get()
+      .then((snapshot) => {
+        if (snapshot.docs.length === 1 && snapshot.docs[0].exists) {
+          //If the query finds one pre-existing user doc with that email (Added to a class before they logged in)
+          // Because they already have classes assigned, rosters and classes will have to be hydrated with data
+          const userDoc = snapshot.docs[0];
+          userDoc.ref
+            .set(userInfo)
+            .then()
+            .catch((err) => {
+              throw err;
+            });
+        } else {
+          //Otherwise, create a new document with their info. Since they haven't been added to other classes, this is all that needs to be done here.
+          db.collection("users")
+            .doc()
+            .create(userInfo)
+            .then()
+            .catch((err) => {
+              throw err;
+            });
+        }
+      })
+      .catch((err) => {
+        throw err;
+      });
+  } catch (err) {
+    return err;
+  }
 });
 
+/**
+ * When a user creates a class, does the following:
+ * 1. Checks if the class has valid info
+ * 2. Updates user profiles with basic class info
+ * 3. Creates a new class instance
+ * 4. Creates a new roster instance
+ * @returns The class data that was sent, or an error
+ */
 export const createClass = functions.https.onCall(async (data, ctx) => {
   if (!ctx.auth || !ctx.auth.token.email) return ERROR_401;
-  if (data.name && data.participants && data.participants.length > 40)
+  if (!data.name || (data.participants && data.participants.length > 40))
     return ERROR_CLASS_REQUEST;
   const { name, section, description, participants } = data as NewClassData;
   const db = admin.firestore();
@@ -126,14 +142,15 @@ export const createClass = functions.https.onCall(async (data, ctx) => {
     }
   });
   //Create a new class document with the basic info + participants
-  batch.create(classRef, {
+  const c = {
     name,
     section,
     description,
     tags: [],
     participants: participants_lc,
     roster: rosterRef.id,
-  });
+  };
+  batch.create(classRef, c);
   //Create a new roster document with each participant's email
   batch.create(rosterRef, {
     class: classRef.id,
@@ -142,13 +159,70 @@ export const createClass = functions.https.onCall(async (data, ctx) => {
 
   return batch
     .commit()
-    .then(() => "Class created successfully!")
+    .then(() => c)
     .catch((err) => err);
 });
 
-// Every day, clean out empty user profiles from the users, classes, and rosters collections
-// Ideally, do so in the order of roster, classes, then users, so you know the important data before
-// Should probably clear out empty / inactive classes, too.
+/**
+ * When a user creates a thread, does the following:
+ * 1. Checks if the necessary thread info
+ * 2. Checks if classId and tags are valid
+ * 3. Adds a new thread instance to the specified class
+ * **Storing thread info on a user might also be a good idea (So they can see what questions they asked)**
+ * @returns The thread data that was sent, or an error
+ */
+export const createThread = functions.https.onCall(async (data, ctx) => {
+  if (!ctx.auth || !ctx.auth.token.email) return ERROR_401;
+  if (
+    !data.title ||
+    !data.classId ||
+    data.title.length > 300 ||
+    data.message?.length > 1500
+  )
+    return ERROR_THREAD_REQUEST;
+  const t = <NewThreadData>data;
+  const classRef = admin.firestore().collection("classes").doc(data.classId);
+  try {
+    const c = await classRef.get().then((res) => res.data()! as ClassData);
+    const userInClass = c.participants?.includes(
+      ctx.auth.token.email.toLowerCase()
+    );
+    const validTags =
+      c.tags?.filter((tag) => !c.tags?.includes(tag)).length === 0;
+    if (!userInClass) throw ERROR_401;
+    else if (t.tags && validTags) throw ERROR_THREAD_REQUEST;
+    else {
+      // NEED TO ADD ANONYMOUS STUFF
+      const threadRef = classRef.collection("threads").doc();
+      const thread: ThreadData = {
+        ...t,
+        className: c.name,
+        email: ctx.auth.token.email,
+        id: threadRef.id,
+        status: {
+          isClosed: false,
+          isResolved: false,
+          numMessages: 0,
+        },
+        created: admin.firestore.Timestamp.now(),
+      };
+      threadRef
+        .create(thread)
+        .then()
+        .catch((err) => {
+          throw err;
+        });
+      return thread;
+    }
+  } catch (err) {
+    return err;
+  }
+});
+
+/**
+ * Every day, clean out empty user profiles from the users, classes, and rosters collections
+ * Ideally, do so in the order of roster, classes, then users, so you know the important data before
+ */
 export const purgeEmptyUsers = functions.pubsub
   .schedule("every 1 day")
   .onRun(async (context) => {
@@ -159,9 +233,11 @@ export const purgeEmptyUsers = functions.pubsub
       .get()
       .then((snapshot) => snapshot.docs)
       .catch((err) => {
-        throw new Error(err);
+        throw err;
       });
     users.forEach((user) => {
       //const email = user.get("email");
     });
   });
+
+//Should probably clear out empty / inactive classes, too.
