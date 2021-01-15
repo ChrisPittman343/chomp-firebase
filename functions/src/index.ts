@@ -2,8 +2,21 @@ import * as functions from "firebase-functions";
 import cors = require("cors");
 import express = require("express");
 import * as admin from "firebase-admin";
-import { ERROR_401, ERROR_CLASS_REQUEST, ERROR_THREAD_REQUEST } from "./errors";
-import { ClassData, NewClassData, NewThreadData, ThreadData } from "./types";
+import {
+  ERROR_401,
+  ERROR_CLASS_REQUEST,
+  ERROR_EMPTY_RESPONSE,
+  ERROR_MESSAGE_REQUEST,
+  ERROR_THREAD_REQUEST,
+} from "./errors";
+import {
+  ClassData,
+  MessageData,
+  NewClassData,
+  NewMessageData,
+  NewThreadData,
+  ThreadData,
+} from "./types";
 import {
   getAuthClient,
   getClassroomClient,
@@ -55,8 +68,6 @@ export const onNewUser = functions.auth.user().onCreate((user, ctx) => {
       .get()
       .then((snapshot) => {
         if (snapshot.docs.length === 1 && snapshot.docs[0].exists) {
-          //If the query finds one pre-existing user doc with that email (Added to a class before they logged in)
-          // Because they already have classes assigned, rosters and classes will have to be hydrated with data
           const userDoc = snapshot.docs[0];
           userDoc.ref
             .set(userInfo)
@@ -65,7 +76,6 @@ export const onNewUser = functions.auth.user().onCreate((user, ctx) => {
               throw err;
             });
         } else {
-          //Otherwise, create a new document with their info. Since they haven't been added to other classes, this is all that needs to be done here.
           db.collection("users")
             .doc()
             .create(userInfo)
@@ -103,8 +113,6 @@ export const createClass = functions.https.onCall(async (data, ctx) => {
   participants_lc?.unshift(ctx.auth.token.email.toLowerCase()); //Adds the teacher's email to the participants
   const participants_added: string[] = [];
   const classRef = db.collection("classes").doc();
-  //@ts-ignore
-  const channelsRef = classRef.collection("threads");
   const rosterRef = db.collection("rosters").doc();
 
   //Updates existing user profiles
@@ -144,6 +152,7 @@ export const createClass = functions.https.onCall(async (data, ctx) => {
   //Create a new class document with the basic info + participants
   const c = {
     name,
+    id: classRef.id,
     section,
     description,
     tags: [],
@@ -190,7 +199,8 @@ export const createThread = functions.https.onCall(async (data, ctx) => {
     const validTags =
       c.tags?.filter((tag) => !c.tags?.includes(tag)).length === 0;
     if (!userInClass) throw ERROR_401;
-    else if (t.tags && validTags) throw ERROR_THREAD_REQUEST;
+    else if (t.tags && t.tags.length > 0 && !validTags)
+      throw ERROR_THREAD_REQUEST;
     else {
       // NEED TO ADD ANONYMOUS STUFF
       const threadRef = classRef.collection("threads").doc();
@@ -217,6 +227,74 @@ export const createThread = functions.https.onCall(async (data, ctx) => {
   } catch (err) {
     return err;
   }
+});
+
+export const createMessage = functions.https.onCall(async (data, ctx) => {
+  if (!ctx.auth || !ctx.auth.token.email) return ERROR_401;
+  if (
+    !data.classId ||
+    !data.threadId ||
+    !data.parentId ||
+    data.message?.length > 2000
+  )
+    return ERROR_MESSAGE_REQUEST;
+  const m = data as NewMessageData;
+  try {
+    const classRef = admin.firestore().collection("classes").doc(m.classId);
+    const c = await classRef.get().then((res) => {
+      if (res.exists) return res.data() as ClassData;
+      else throw ERROR_EMPTY_RESPONSE;
+    });
+    if (!c.participants?.includes(ctx.auth.token.email.toLowerCase()))
+      return ERROR_401;
+
+    const threadRef = classRef.collection("threads").doc(m.threadId);
+
+    const batch = admin.firestore().batch();
+
+    batch.set(
+      threadRef,
+      {
+        status: {
+          numMessages: admin.firestore.FieldValue.increment(1),
+        },
+      },
+      { merge: true }
+    );
+    const messageRef = threadRef.collection("messages").doc();
+
+    const newMessage: MessageData = {
+      id: messageRef.id,
+      parentId: m.parentId,
+      email: ctx.auth.token.email.toLowerCase(),
+      isTop: m.parentId === m.threadId,
+      message: m.message,
+      sent: admin.firestore.Timestamp.now(),
+    };
+
+    batch.create(messageRef, newMessage);
+
+    batch
+      .commit()
+      .then()
+      .catch((err) => {
+        throw err;
+      });
+
+    return newMessage;
+  } catch (err) {
+    return err;
+  }
+});
+
+// For the following 2 functions, you only need to know who created the thread to ensure that the correct person is resolving things.
+// So probably only need classId and threadId (Email comes in ctx)
+export const resolveThread = functions.https.onCall(async (data, ctx) => {
+  return "Resolved!";
+});
+
+export const closeThread = functions.https.onCall(async (data, ctx) => {
+  return "Closed!";
 });
 
 /**

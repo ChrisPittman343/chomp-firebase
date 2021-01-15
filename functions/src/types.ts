@@ -40,3 +40,19 @@ export interface ThreadData {
   };
   created: admin.firestore.Timestamp;
 }
+
+export interface NewMessageData {
+  classId: string;
+  threadId: string;
+  parentId: string;
+  message: string;
+}
+
+export interface MessageData {
+  id: string;
+  parentId: string;
+  message: string;
+  isTop: boolean;
+  email: string;
+  sent: admin.firestore.Timestamp;
+}
