@@ -174,7 +174,7 @@ export const createClass = functions.https.onCall(async (data, ctx) => {
 
 /**
  * When a user creates a thread, does the following:
- * 1. Checks if the necessary thread info
+ * 1. Checks if the necessary thread info exists
  * 2. Checks if classId and tags are valid
  * 3. Adds a new thread instance to the specified class
  * **Storing thread info on a user might also be a good idea (So they can see what questions they asked)**
@@ -189,8 +189,9 @@ export const createThread = functions.https.onCall(async (data, ctx) => {
     data.message?.length > 1500
   )
     return ERROR_THREAD_REQUEST;
+  const db = admin.firestore();
   const t = <NewThreadData>data;
-  const classRef = admin.firestore().collection("classes").doc(data.classId);
+  const classRef = db.collection("classes").doc(data.classId);
   try {
     const c = await classRef.get().then((res) => res.data()! as ClassData);
     const userInClass = c.participants?.includes(
@@ -202,33 +203,40 @@ export const createThread = functions.https.onCall(async (data, ctx) => {
     else if (t.tags && t.tags.length > 0 && !validTags)
       throw ERROR_THREAD_REQUEST;
     else {
-      // NEED TO ADD ANONYMOUS STUFF
-      const threadRef = classRef.collection("threads").doc();
+      const threadRef = db.collection("threads").doc();
       const thread: ThreadData = {
         ...t,
         className: c.name,
         email: ctx.auth.token.email,
         id: threadRef.id,
-        status: {
-          isClosed: false,
-          isResolved: false,
-          numMessages: 0,
-        },
+        isClosed: false,
+        numMessages: 0,
+        downvoters: [],
+        upvoters: [],
+        score: 0,
         created: admin.firestore.Timestamp.now(),
       };
-      threadRef
+
+      return threadRef
         .create(thread)
-        .then()
+        .then(() => thread)
         .catch((err) => {
           throw err;
         });
-      return thread;
     }
   } catch (err) {
     return err;
   }
 });
 
+/**
+ * When a user creates a message, does the following:
+ * 1. Checks if the necessary thread info
+ * 2. Checks if classId, threadId, and parentId are valid
+ * 3. Adds a new thread instance to the specified class
+ * **Storing thread info on a user might also be a good idea (So they can see what questions they asked)**
+ * @returns The thread data that was sent, or an error
+ */
 export const createMessage = functions.https.onCall(async (data, ctx) => {
   if (!ctx.auth || !ctx.auth.token.email) return ERROR_401;
   if (
@@ -238,9 +246,10 @@ export const createMessage = functions.https.onCall(async (data, ctx) => {
     data.message?.length > 2000
   )
     return ERROR_MESSAGE_REQUEST;
+  const db = admin.firestore();
   const m = data as NewMessageData;
   try {
-    const classRef = admin.firestore().collection("classes").doc(m.classId);
+    const classRef = db.collection("classes").doc(m.classId);
     const c = await classRef.get().then((res) => {
       if (res.exists) return res.data() as ClassData;
       else throw ERROR_EMPTY_RESPONSE;
@@ -248,10 +257,9 @@ export const createMessage = functions.https.onCall(async (data, ctx) => {
     if (!c.participants?.includes(ctx.auth.token.email.toLowerCase()))
       return ERROR_401;
 
-    const threadRef = classRef.collection("threads").doc(m.threadId);
+    const threadRef = db.collection("threads").doc(m.threadId);
 
-    const batch = admin.firestore().batch();
-
+    const batch = db.batch();
     batch.set(
       threadRef,
       {
@@ -261,40 +269,32 @@ export const createMessage = functions.https.onCall(async (data, ctx) => {
       },
       { merge: true }
     );
-    const messageRef = threadRef.collection("messages").doc();
+    const messageRef = db.collection("messages").doc();
 
     const newMessage: MessageData = {
       id: messageRef.id,
+      classId: m.classId,
+      threadId: m.threadId,
       parentId: m.parentId,
       email: ctx.auth.token.email.toLowerCase(),
-      isTop: m.parentId === m.threadId,
       message: m.message,
+      downvoters: [],
+      upvoters: [],
+      score: 0,
       sent: admin.firestore.Timestamp.now(),
     };
 
     batch.create(messageRef, newMessage);
 
-    batch
+    return batch
       .commit()
-      .then()
+      .then(() => newMessage)
       .catch((err) => {
         throw err;
       });
-
-    return newMessage;
   } catch (err) {
     return err;
   }
-});
-
-// For the following 2 functions, you only need to know who created the thread to ensure that the correct person is resolving things.
-// So probably only need classId and threadId (Email comes in ctx)
-export const resolveThread = functions.https.onCall(async (data, ctx) => {
-  return "Resolved!";
-});
-
-export const closeThread = functions.https.onCall(async (data, ctx) => {
-  return "Closed!";
 });
 
 /**

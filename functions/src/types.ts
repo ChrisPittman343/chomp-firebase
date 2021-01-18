@@ -33,11 +33,12 @@ export interface ThreadData {
   title: string;
   message?: string;
   tags?: string[];
-  status: {
-    isClosed: boolean;
-    isResolved: boolean;
-    numMessages: number;
-  };
+  isClosed: boolean;
+  answerId?: string;
+  numMessages: number;
+  score: number;
+  upvoters: string[];
+  downvoters: string[];
   created: admin.firestore.Timestamp;
 }
 
@@ -50,9 +51,18 @@ export interface NewMessageData {
 
 export interface MessageData {
   id: string;
+  threadId: string;
+  classId: string;
   parentId: string;
+  score: number;
+  upvoters: string[];
+  downvoters: string[];
   message: string;
-  isTop: boolean;
   email: string;
   sent: admin.firestore.Timestamp;
+}
+
+export interface ResolveThread {
+  threadId: string;
+  messageId: string;
 }

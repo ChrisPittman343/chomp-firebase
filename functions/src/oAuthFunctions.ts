@@ -1,5 +1,5 @@
 import { classroom_v1, google } from "googleapis";
-import { CLIENT_ID, CLIENT_SECRET, REDIRECT_URI, SCOPES } from "./credentials";
+import { REDIRECT_URI, SCOPES } from "./credentials";
 
 /**
  * Sets default authorization for Google API calls
@@ -8,8 +8,8 @@ import { CLIENT_ID, CLIENT_SECRET, REDIRECT_URI, SCOPES } from "./credentials";
  */
 export function getAuthClient(accessToken: string) {
   const oAuth2Client = new google.auth.OAuth2(
-    CLIENT_ID,
-    CLIENT_SECRET,
+    process.env.CLIENT_ID,
+    process.env.CLIENT_SECRET,
     REDIRECT_URI
   );
   oAuth2Client.setCredentials({
