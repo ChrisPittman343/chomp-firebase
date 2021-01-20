@@ -105,71 +105,76 @@ export const createClass = functions.https.onCall(async (data, ctx) => {
   if (!ctx.auth || !ctx.auth.token.email) return ERROR_401;
   if (!data.name || (data.participants && data.participants.length > 40))
     return ERROR_CLASS_REQUEST;
-  const { name, section, description, participants } = data as NewClassData;
   const db = admin.firestore();
-  const batch = db.batch();
+  try {
+    const { name, section, description, participants } = data as NewClassData;
+    const participants_lc = participants?.map((p) => p.toLowerCase()) || []; // Also need to filter for dupes
+    participants_lc?.unshift(ctx.auth.token.email.toLowerCase()); //Adds the teacher's email to the participants
+    const participants_added: string[] = [];
+    const classRef = db.collection("classes").doc();
+    const rosterRef = db.collection("rosters").doc(classRef.id);
+    const usersRef = db
+      .collection("users")
+      .where("email", "in", participants_lc);
 
-  const participants_lc = participants?.map((p) => p.toLowerCase()) || [];
-  participants_lc?.unshift(ctx.auth.token.email.toLowerCase()); //Adds the teacher's email to the participants
-  const participants_added: string[] = [];
-  const classRef = db.collection("classes").doc();
-  const rosterRef = db.collection("rosters").doc();
-
-  //Updates existing user profiles
-  const userDocs = (
-    await db.collection("users").where("email", "in", participants_lc).get()
-  ).docs;
-  userDocs.forEach((user) => {
-    participants_added.push(user.get("email"));
-    batch.set(
-      user.ref,
-      {
-        classes: admin.firestore.FieldValue.arrayUnion({
-          id: classRef.id,
-          name,
-          section,
-          description,
-        }),
-      },
-      { merge: true }
-    );
-  });
-  //Create new user profiles if not already added
-  participants_lc?.forEach((email) => {
-    if (participants_added.indexOf(email) === -1) {
-      const newUser = db.collection("users").doc();
-      batch.create(newUser, {
-        email,
-        classes: admin.firestore.FieldValue.arrayUnion({
-          id: classRef.id,
-          name,
-          section,
-          description,
-        }),
+    return await db.runTransaction(async (t) => {
+      //Updates existing user profiles
+      (await t.get(usersRef)).docs.forEach((user) => {
+        participants_added.push(user.get("email"));
+        t.set(
+          user.ref,
+          {
+            classes: admin.firestore.FieldValue.arrayUnion({
+              id: classRef.id,
+              name,
+              section,
+              description,
+            }),
+          },
+          { merge: true }
+        );
       });
-    }
-  });
-  //Create a new class document with the basic info + participants
-  const c = {
-    name,
-    id: classRef.id,
-    section,
-    description,
-    tags: [],
-    participants: participants_lc,
-    roster: rosterRef.id,
-  };
-  batch.create(classRef, c);
-  //Create a new roster document with each participant's email
-  batch.create(rosterRef, {
-    class: classRef.id,
-    participants: participants_lc,
-  });
 
-  return batch
-    .commit()
-    .then(() => c)
-    .catch((err) => err);
+      //Create new user profiles if not already added
+      participants_lc?.forEach((email) => {
+        if (participants_added.indexOf(email) === -1) {
+          const newUserRef = db.collection("users").doc();
+          t.create(newUserRef, {
+            email,
+            classes: admin.firestore.FieldValue.arrayUnion({
+              id: classRef.id,
+              name,
+              section,
+              description,
+            }),
+          });
+        }
+      });
+
+      //Create a new class document with the basic info + participants
+      const c: ClassData = {
+        name,
+        id: classRef.id,
+        section,
+        description,
+        tags: [],
+        participants: participants_lc,
+        roster: rosterRef.id,
+      };
+      t.create(classRef, c);
+
+      //Create a new roster document with each participant's email
+      t.create(rosterRef, {
+        classId: classRef.id,
+        participants: participants_lc,
+      });
+
+      return c;
+    });
+  } catch (e) {
+    console.log("Create class failure:", e);
+    return e;
+  }
 });
 
 /**
@@ -190,42 +195,41 @@ export const createThread = functions.https.onCall(async (data, ctx) => {
   )
     return ERROR_THREAD_REQUEST;
   const db = admin.firestore();
-  const t = <NewThreadData>data;
-  const classRef = db.collection("classes").doc(data.classId);
+
   try {
-    const c = await classRef.get().then((res) => res.data()! as ClassData);
-    const userInClass = c.participants?.includes(
-      ctx.auth.token.email.toLowerCase()
-    );
-    const validTags =
-      c.tags?.filter((tag) => !c.tags?.includes(tag)).length === 0;
-    if (!userInClass) throw ERROR_401;
-    else if (t.tags && t.tags.length > 0 && !validTags)
-      throw ERROR_THREAD_REQUEST;
-    else {
-      const threadRef = db.collection("threads").doc();
+    const threadInput = <NewThreadData>data;
+    const classRef = db.collection("classes").doc(data.classId);
+    const threadRef = db.collection("threads").doc();
+    return await db.runTransaction(async (t) => {
+      // Initial auth checks
+      const c = (await classRef.get()).data() as ClassData | undefined;
+      if (!c) throw ERROR_EMPTY_RESPONSE;
+      if (!c.participants?.includes(ctx.auth!.token.email!.toLowerCase()))
+        throw ERROR_401;
+
+      // Tag validity check
+      const validTags =
+        c.tags?.filter((tag) => !c.tags?.includes(tag)).length === 0;
+      if (threadInput.tags && threadInput.tags.length > 0 && !validTags)
+        throw ERROR_THREAD_REQUEST;
+
+      // Creating new thread doc
       const thread: ThreadData = {
-        ...t,
+        ...threadInput,
         className: c.name,
-        email: ctx.auth.token.email,
+        email: ctx.auth!.token.email!,
         id: threadRef.id,
         isClosed: false,
         numMessages: 0,
-        downvoters: [],
-        upvoters: [],
         score: 0,
         created: admin.firestore.Timestamp.now(),
       };
-
-      return threadRef
-        .create(thread)
-        .then(() => thread)
-        .catch((err) => {
-          throw err;
-        });
-    }
-  } catch (err) {
-    return err;
+      t.create(threadRef, thread);
+      return thread;
+    });
+  } catch (e) {
+    console.log("Create thread failure:", e);
+    return e;
   }
 });
 
@@ -247,55 +251,64 @@ export const createMessage = functions.https.onCall(async (data, ctx) => {
   )
     return ERROR_MESSAGE_REQUEST;
   const db = admin.firestore();
-  const m = data as NewMessageData;
   try {
+    const m = data as NewMessageData;
     const classRef = db.collection("classes").doc(m.classId);
-    const c = await classRef.get().then((res) => {
-      if (res.exists) return res.data() as ClassData;
-      else throw ERROR_EMPTY_RESPONSE;
-    });
-    if (!c.participants?.includes(ctx.auth.token.email.toLowerCase()))
-      return ERROR_401;
-
     const threadRef = db.collection("threads").doc(m.threadId);
+    const messageRef = db.collection("messages").doc();
+    return await db.runTransaction(async (t) => {
+      // Initial auth checks
+      const c = (await classRef.get()).data() as ClassData | undefined;
+      if (!c) throw ERROR_EMPTY_RESPONSE;
+      if (!c.participants?.includes(ctx.auth!.token.email!.toLowerCase()))
+        throw ERROR_401;
 
-    const batch = db.batch();
-    batch.set(
-      threadRef,
-      {
-        status: {
+      // Updating the thread's message count
+      t.set(
+        threadRef,
+        {
           numMessages: admin.firestore.FieldValue.increment(1),
         },
-      },
-      { merge: true }
-    );
-    const messageRef = db.collection("messages").doc();
+        { merge: true }
+      );
 
-    const newMessage: MessageData = {
-      id: messageRef.id,
-      classId: m.classId,
-      threadId: m.threadId,
-      parentId: m.parentId,
-      email: ctx.auth.token.email.toLowerCase(),
-      message: m.message,
-      downvoters: [],
-      upvoters: [],
-      score: 0,
-      sent: admin.firestore.Timestamp.now(),
-    };
-
-    batch.create(messageRef, newMessage);
-
-    return batch
-      .commit()
-      .then(() => newMessage)
-      .catch((err) => {
-        throw err;
-      });
-  } catch (err) {
-    return err;
+      // Creating a new message doc
+      const newMessage: MessageData = {
+        id: messageRef.id,
+        classId: m.classId,
+        threadId: m.threadId,
+        parentId: m.parentId,
+        email: ctx.auth!.token.email!.toLowerCase(),
+        message: m.message,
+        score: 0,
+        sent: admin.firestore.Timestamp.now(),
+      };
+      t.create(messageRef, newMessage);
+      return newMessage;
+    });
+  } catch (e) {
+    console.log("Create message failure:", e);
+    return e;
   }
 });
+
+/**
+ * Occurs when a user changes their vote on a thread
+ */
+export const onThreadVote = functions.firestore
+  .document("/threadVotes/{threadVoteId}")
+  .onUpdate((change, ctx) => {
+    // Don't need to check user auth because if it made it here, then they already are authorized to make the request
+  });
+
+/**
+ * Occurs when a user changes their vote on a message
+ */
+export const onMessageVote = functions.firestore
+  .document("/threadVotes/{threadVoteId}")
+  .onUpdate((change, ctx) => {
+    // Don't need to check user auth because if it made it here, then they already are authorized to make the request
+  });
 
 /**
  * Every day, clean out empty user profiles from the users, classes, and rosters collections
@@ -305,6 +318,7 @@ export const purgeEmptyUsers = functions.pubsub
   .schedule("every 1 day")
   .onRun(async (context) => {
     const db = admin.firestore();
+
     const users = await db
       .collection("users")
       .where("uid", "==", "")

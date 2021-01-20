@@ -37,8 +37,6 @@ export interface ThreadData {
   answerId?: string;
   numMessages: number;
   score: number;
-  upvoters: string[];
-  downvoters: string[];
   created: admin.firestore.Timestamp;
 }
 
@@ -55,8 +53,6 @@ export interface MessageData {
   classId: string;
   parentId: string;
   score: number;
-  upvoters: string[];
-  downvoters: string[];
   message: string;
   email: string;
   sent: admin.firestore.Timestamp;
