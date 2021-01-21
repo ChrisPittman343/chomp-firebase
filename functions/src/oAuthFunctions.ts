@@ -28,19 +28,24 @@ export async function getCourses(
   classroom: classroom_v1.Classroom,
   numCourses = 5
 ) {
-  const courses = await classroom.courses.list({
-    courseStates: ["ACTIVE"],
-    teacherId: "me",
-    pageSize: numCourses,
-  });
-  return courses.data.courses;
+  return classroom.courses
+    .list({
+      courseStates: ["ACTIVE"],
+      teacherId: "me",
+      pageSize: numCourses,
+    })
+    .then((courses) => courses.data.courses)
+    .catch((e) => {
+      console.log("Course fetch failure:", e);
+      throw e;
+    });
 }
 
 export async function getStudents(
   classroom: classroom_v1.Classroom,
   courses: classroom_v1.Schema$Course[],
   numStudents = 40
-) {
+): Promise<classroom_v1.Schema$Student[][]> {
   const promises = [];
   for (const course of courses) {
     promises.push(
@@ -51,11 +56,13 @@ export async function getStudents(
     );
   }
   return Promise.all(promises)
-    .then((data) => {
-      return data.map((dat) => dat.data.students);
+    .then((res) => {
+      if (!res || res.length === 0) return [];
+      return res.map((d) => (d.data.students ? d.data.students : []));
     })
-    .catch((err) => {
-      return [];
+    .catch((e) => {
+      console.log("Students fetch failure:", e);
+      throw e;
     });
 }
 
