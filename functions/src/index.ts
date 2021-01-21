@@ -1,6 +1,4 @@
 import * as functions from "firebase-functions";
-import cors = require("cors");
-import express = require("express");
 import * as admin from "firebase-admin";
 import {
   ERROR_401,
@@ -16,82 +14,71 @@ import {
   NewMessageData,
   NewThreadData,
   ThreadData,
+  Vote,
 } from "./types";
 import {
   getAuthClient,
   getClassroomClient,
   getCourses,
   getStudents,
+  parseCourseData,
 } from "./oAuthFunctions";
-import { verifyBasicAuth } from "./verifyRequest";
 
 admin.initializeApp();
 
-//#region Express
-const app = express();
-app.use(cors({ origin: true, methods: ["GET", "POST"] }));
-
-app.post("/get-classes", async (req, res) => {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  const idToken = req.header("Authorization");
-  const accessToken = req.header("Access-Token");
-  if (!idToken || !accessToken) res.send(ERROR_401);
-  verifyBasicAuth(req, res)
-    .then()
-    .catch((err) => res.send(ERROR_401));
-  const authClient = getAuthClient(accessToken!);
-  const classroom = getClassroomClient(authClient);
-  const coursesData = await getCourses(classroom);
-  const studentsData = await getStudents(classroom, coursesData!);
-  if (!coursesData || !studentsData) {
-    res.status(401).send(ERROR_401);
-  }
-  //@ts-ignore
-  const classData = parseCourseData(coursesData, studentsData);
-  res.send(classData);
-});
-
-exports.widgets = functions.https.onRequest(app);
-//#endregion
-
-export const onNewUser = functions.auth.user().onCreate((user, ctx) => {
+export const onNewUser = functions.auth.user().onCreate(async (user, ctx) => {
   const db = admin.firestore();
-  const userInfo = {
-    name: user.displayName!,
-    uid: user.uid,
-    email: user.email!.toLowerCase(),
-    photoURL: user.photoURL,
-  };
+
   try {
-    db.collection("users")
-      .where("email", "==", user.email)
-      .get()
-      .then((snapshot) => {
-        if (snapshot.docs.length === 1 && snapshot.docs[0].exists) {
-          const userDoc = snapshot.docs[0];
-          userDoc.ref
-            .set(userInfo)
-            .then()
-            .catch((err) => {
-              throw err;
-            });
-        } else {
-          db.collection("users")
-            .doc()
-            .create(userInfo)
-            .then()
-            .catch((err) => {
-              throw err;
-            });
-        }
-      })
-      .catch((err) => {
-        throw err;
-      });
+    const userQuery = db.collection("users").where("email", "==", user.email);
+    await db.runTransaction(async (t) => {
+      const userInfo = {
+        name: user.displayName!,
+        uid: user.uid,
+        email: user.email!.toLowerCase(),
+        created: admin.firestore.Timestamp.now(),
+      };
+      const userDocs = await t.get(userQuery);
+      // Checks to see if a user doc already exists (Due to them being added to a class)
+      if (userDocs.docs.length === 1 && userDocs.docs[0].exists) {
+        const userDoc = userDocs.docs[0];
+        t.set(userDoc.ref, userInfo, { merge: true });
+      }
+      // If there's no doc, create one
+      else if (userDocs.docs.length === 0) {
+        const newUserRef = db.collection("users").doc();
+        t.create(newUserRef, userInfo);
+      } else {
+        throw ERROR_401;
+      }
+    });
   } catch (err) {
     return err;
   }
 });
+
+export const fetchClassroomClasses = functions.https.onCall(
+  async (data, ctx) => {
+    if (!ctx.auth || !ctx.auth.token.email || !data.accessToken)
+      return ERROR_401;
+    try {
+      const accessToken = data.accessToken;
+      // Getting clients for GC + Auth
+      const authClient = getAuthClient(accessToken);
+      const classroom = getClassroomClient(authClient);
+
+      // Fetching the actual information
+      const coursesData = await getCourses(classroom);
+      if (!coursesData) throw ERROR_EMPTY_RESPONSE;
+      const studentsData = await getStudents(classroom, coursesData);
+
+      return parseCourseData(coursesData, studentsData);
+    } catch (e) {
+      console.log("GC fetch failure:", e);
+      return e;
+    }
+  }
+);
 
 /**
  * When a user creates a class, does the following:
@@ -299,6 +286,10 @@ export const onThreadVote = functions.firestore
   .document("/threadVotes/{threadVoteId}")
   .onUpdate((change, ctx) => {
     // Don't need to check user auth because if it made it here, then they already are authorized to make the request
+    const newScore = (change.after.get("votes") as Vote[]).reduce(
+      (prev, curr) => prev + curr.value,
+      0
+    );
   });
 
 /**
@@ -308,6 +299,10 @@ export const onMessageVote = functions.firestore
   .document("/threadVotes/{threadVoteId}")
   .onUpdate((change, ctx) => {
     // Don't need to check user auth because if it made it here, then they already are authorized to make the request
+    const newScore = (change.after.get("votes") as Vote[]).reduce(
+      (prev, curr) => prev + curr.value,
+      0
+    );
   });
 
 /**
@@ -316,20 +311,29 @@ export const onMessageVote = functions.firestore
  */
 export const purgeEmptyUsers = functions.pubsub
   .schedule("every 1 day")
-  .onRun(async (context) => {
+  .onRun(async (ctx) => {
     const db = admin.firestore();
+    try {
+      await db.runTransaction(async (t) => {
+        const emptyUserQuery = db.collection("users").where("uid", "==", "");
+        const emptyUserDocs = (await t.get(emptyUserQuery)).docs;
+        const expiredUserRefs: FirebaseFirestore.DocumentReference<FirebaseFirestore.DocumentData>[] = [];
+        emptyUserDocs.forEach((doc) => {
+          const creationMS = (doc.get("created") as admin.firestore.Timestamp)
+            .seconds;
+          const currentMS = Date.now();
+          // sec -> mins -> hrs -> days -> 2 wks
+          const twoWeekMS = 1000 * 60 * 60 * 24 * 14;
+          if (currentMS - creationMS < twoWeekMS) expiredUserRefs.push(doc.ref);
+        });
 
-    const users = await db
-      .collection("users")
-      .where("uid", "==", "")
-      .get()
-      .then((snapshot) => snapshot.docs)
-      .catch((err) => {
-        throw err;
+        expiredUserRefs.forEach((userRef) => {
+          t.delete(userRef);
+        });
       });
-    users.forEach((user) => {
-      //const email = user.get("email");
-    });
+    } catch (e) {
+      console.log("Empty user deletion failure:", e);
+    }
   });
 
 //Should probably clear out empty / inactive classes, too.

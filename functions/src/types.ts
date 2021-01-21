@@ -62,3 +62,14 @@ export interface ResolveThread {
   threadId: string;
   messageId: string;
 }
+
+export interface Error {
+  code: number;
+  message: string;
+  status: string;
+}
+
+export interface Vote {
+  id: string;
+  value: 1 | 0 | -1;
+}
