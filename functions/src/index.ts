@@ -23,6 +23,7 @@ import {
   getStudents,
   parseCourseData,
 } from "./oAuthFunctions";
+import { findVotesDiff } from "./findVotesDiff";
 
 admin.initializeApp();
 
@@ -279,17 +280,39 @@ export const createMessage = functions.https.onCall(async (data, ctx) => {
   }
 });
 
+// WARNING!!!!!!!!! NEXT 2 FUNCTIONS ARE SCARY
+// Updating a doc on every single vote could result in a metric shit-ton of writes, and could easily push over the
+// 20k threshhold. The only way I can think of avoiding this is by keeping score AND voted users in one document, which
+// isn't really an option that I want to use.
+// Perhaps some kind of timestamp that says you can't update something until after some delay would help?
+
 /**
  * Occurs when a user changes their vote on a thread
  */
 export const onThreadVote = functions.firestore
   .document("/threadVotes/{threadVoteId}")
-  .onUpdate((change, ctx) => {
+  .onUpdate(async (change, ctx) => {
     // Don't need to check user auth because if it made it here, then they already are authorized to make the request
-    const newScore = (change.after.get("votes") as Vote[]).reduce(
-      (prev, curr) => prev + curr.value,
-      0
-    );
+    try {
+      const db = admin.firestore();
+      const diff = findVotesDiff(
+        change.before.get("votes") as Vote[],
+        change.after.get("votes") as Vote[]
+      );
+      await db.runTransaction(async (t) => {
+        diff.forEach(([prev, curr]) => {
+          const threadRef = db.collection("threads").doc(curr.id);
+          return t.update(threadRef, {
+            value: admin.firestore.FieldValue.increment(
+              curr.value - prev.value
+            ),
+          });
+        });
+      });
+    } catch (e) {
+      console.log("Update thread votes failed:", e);
+      return e;
+    }
   });
 
 /**
@@ -297,12 +320,14 @@ export const onThreadVote = functions.firestore
  */
 export const onMessageVote = functions.firestore
   .document("/threadVotes/{threadVoteId}")
-  .onUpdate((change, ctx) => {
+  .onUpdate(async (change, ctx) => {
     // Don't need to check user auth because if it made it here, then they already are authorized to make the request
-    const newScore = (change.after.get("votes") as Vote[]).reduce(
-      (prev, curr) => prev + curr.value,
-      0
-    );
+    try {
+      //
+    } catch (e) {
+      console.log("Update message votes failed:", e);
+      return e;
+    }
   });
 
 /**
