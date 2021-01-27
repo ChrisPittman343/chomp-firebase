@@ -335,7 +335,8 @@ export const onMessageVote = functions.firestore
  * Ideally, do so in the order of roster, classes, then users, so you know the important data before
  */
 export const purgeEmptyUsers = functions.pubsub
-  .schedule("every 1 day")
+  .schedule("every 12 hours")
+  .timeZone("America/New_York")
   .onRun(async (ctx) => {
     const db = admin.firestore();
     try {
