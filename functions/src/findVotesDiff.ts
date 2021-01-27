@@ -3,7 +3,9 @@ import { Vote } from "./types";
 /**
  * Gets before + after values of votes that were changed
  *
- * **WARNING** If prev + curr votes have the same lengths but are mixed with different vote ids,
+ * **WARNING!**
+ *
+ * If prev + curr votes have the same lengths but are mixed with different vote ids,
  * the function won't detect a difference and will lead to some pretty nasty bugs.
  * @param prevVotes
  * @param currVotes
@@ -14,7 +16,7 @@ export const findVotesDiff = (prevVotes: Vote[], currVotes: Vote[]) => {
   if (currVotes.length >= prevVotes.length) {
     currVotes.forEach((vote) => {
       const prevVote = prevVotes.find((v) => v.id === vote.id);
-      if (!prevVote || { ...vote } !== { ...prevVote })
+      if (!prevVote || vote.value !== prevVote.value)
         diff.push([
           { id: vote.id, value: prevVote ? prevVote.value : 0 },
           { ...vote },
@@ -22,7 +24,7 @@ export const findVotesDiff = (prevVotes: Vote[], currVotes: Vote[]) => {
     });
   } else {
     prevVotes.forEach((vote) => {
-      const currVote = prevVotes.find((v) => v.id === vote.id);
+      const currVote = currVotes.find((v) => v.id === vote.id);
       if (!currVote || { ...vote } !== { ...currVote })
         diff.push([
           { ...vote },

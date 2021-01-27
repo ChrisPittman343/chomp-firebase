@@ -302,8 +302,9 @@ export const onThreadVote = functions.firestore
       await db.runTransaction(async (t) => {
         diff.forEach(([prev, curr]) => {
           const threadRef = db.collection("threads").doc(curr.id);
+          // Should go through diffs and make sure one document isn't updated multiple times, waste of updates
           return t.update(threadRef, {
-            value: admin.firestore.FieldValue.increment(
+            score: admin.firestore.FieldValue.increment(
               curr.value - prev.value
             ),
           });
@@ -323,7 +324,22 @@ export const onMessageVote = functions.firestore
   .onUpdate(async (change, ctx) => {
     // Don't need to check user auth because if it made it here, then they already are authorized to make the request
     try {
-      //
+      const db = admin.firestore();
+      const diff = findVotesDiff(
+        change.before.get("votes") as Vote[],
+        change.after.get("votes") as Vote[]
+      );
+      await db.runTransaction(async (t) => {
+        diff.forEach(([prev, curr]) => {
+          const messageRef = db.collection("messages").doc(curr.id);
+          // Should go through diffs and make sure one document isn't updated multiple times, waste of updates
+          return t.update(messageRef, {
+            score: admin.firestore.FieldValue.increment(
+              curr.value - prev.value
+            ),
+          });
+        });
+      });
     } catch (e) {
       console.log("Update message votes failed:", e);
       return e;
